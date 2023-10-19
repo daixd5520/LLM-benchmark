@@ -1,10 +1,11 @@
-""" PyTorch ChatGLM model. original"""
+""" PyTorch ChatGLM model. original更改"""
 
 import math
 import copy
 import warnings
 import re
 import sys
+import time
 
 import torch
 import torch.utils.checkpoint
@@ -756,6 +757,14 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
                                         dtype=config.torch_dtype, **init_kwargs)
         self.pre_seq_len = config.pre_seq_len
         self.prefix_projection = config.prefix_projection
+        ###############################改：增start#########################################
+        self.seq_len = 0
+        self.fwd_num = 0
+        self.encode_time = 0
+        self.decode_time = 0
+        self.one_sec_tokens = 0
+        self.first_token_time = 0
+        ###############################改：增end###########################################
         if self.pre_seq_len is not None:
             for param in self.parameters():
                 param.requires_grad = False
@@ -793,6 +802,11 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
     ):
+        ###########################改：增start###############################
+        self.fwd_num = self.fwd_num + 1
+        torch.cuda.synchronize()
+        st = time.time()
+        ###########################改：增end#################################
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
@@ -832,6 +846,23 @@ class ChatGLMModel(ChatGLMPreTrainedModel):
 
         if not return_dict:
             return tuple(v for v in [hidden_states, presents, all_hidden_states, all_self_attentions] if v is not None)
+
+        ########################改：增start#########################
+        torch.cuda.synchronize()
+        ed = time.time()
+        #第一个forward是encoder的，第二个forward是第一个token生成，所以first_token_time = encode_time + decode_time1.
+        if self.fwd_num == 1:
+            self.encode_time += ((ed - st) * 1000)
+            self.seq_len = seq_length
+            self.one_sec_tokens += 1
+        else:
+            self.decode_time += ((ed - st) * 1000)
+            if self.fwd_num==2:             #计算first_token_time 
+                self.first_token_time = self.encode_time+self.decode_time
+            if self.decode_time+self.encode_time<=1000.5:
+                self.one_sec_tokens += 1
+
+        ########################改：增end###########################
 
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,

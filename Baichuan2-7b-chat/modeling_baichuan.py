@@ -1,3 +1,4 @@
+#尚未改完
 # Copyright 2023 Baichuan Inc. All Rights Reserved.
 
 # Copyright 2022 EleutherAI and the HuggingFace Inc. team. All rights reserved.
@@ -39,6 +40,7 @@ from transformers.generation.utils import GenerationConfig
 from transformers.utils import logging, ContextManagers
 
 import os
+import time
 from contextlib import contextmanager
 logger = logging.get_logger(__name__)
 
@@ -329,6 +331,12 @@ class BaichuanModel(BaichuanPreTrainedModel):
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.layers = nn.ModuleList([DecoderLayer(config) for _ in range(config.num_hidden_layers)])
         self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        ####################改：增start#######################
+        self.time_tot=0.0
+        self.fwd_num = 0
+        self.one_sec_tokens = 0
+        self.first_token_time = 0
+        ####################改：增end#########################
 
         self.gradient_checkpointing = False
         # Initialize weights and apply final processing
@@ -376,6 +384,10 @@ class BaichuanModel(BaichuanPreTrainedModel):
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
+        #################改：增start####################
+        torch.cuda.synchronize()
+        start_time = time.time()
+        #################改：增end######################
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -434,13 +446,14 @@ class BaichuanModel(BaichuanPreTrainedModel):
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         next_decoder_cache = () if use_cache else None
+        
 
-        for idx, decoder_layer in enumerate(self.layers):
+        for idx, decoder_layer in enumerate(self.layers):   #每次循环是每个layer的时间
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
             past_key_value = past_key_values[idx] if past_key_values is not None else None
-
+            
             if self.gradient_checkpointing and self.training:
 
                 def create_custom_forward(module):
@@ -484,6 +497,19 @@ class BaichuanModel(BaichuanPreTrainedModel):
         next_cache = next_decoder_cache if use_cache else None
         if not return_dict:
             return tuple(v for v in [hidden_states, next_cache, all_hidden_states, all_self_attns] if v is not None)
+        #########################改：增start##############################
+        torch.cuda.synchronize()
+        end_time = time.time()
+        time_token=end_time-start_time
+        self.fwd_num += 1
+        self.time_tot += time_token
+        if self.fwd_num == 2:
+            self.first_token_time = self.time_tot
+        if self.time_tot<=1.0004:
+            self.one_sec_tokens += 1
+        #print("time_token:%.4f s\n" % (time_token))
+        #print("time_tot:%.4f s\n" % (self.time_tot))
+        #########################改：增end################################
         return BaseModelOutputWithPast(
             last_hidden_state=hidden_states,
             past_key_values=next_cache,
@@ -527,7 +553,9 @@ class BaichuanForCausalLM(BaichuanPreTrainedModel):
     def __init__(self, config, *model_args, **model_kwargs):
         super().__init__(config, *model_args, **model_kwargs)
         self.model = BaichuanModel(config)
-
+        #################改：增start####################
+        self.input_len=0
+        #################改：增end######################
         self.lm_head = NormHead(config.hidden_size, config.vocab_size, bias=False)
         if hasattr(config, "quantization_config") and isinstance(config.quantization_config, dict) and config.quantization_config.get('load_in_4bit', False):
             try:
@@ -675,7 +703,6 @@ class BaichuanForCausalLM(BaichuanPreTrainedModel):
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
-
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -772,6 +799,11 @@ class BaichuanForCausalLM(BaichuanPreTrainedModel):
              generation_config: Optional[GenerationConfig]=None):
         generation_config = generation_config or self.generation_config
         input_ids = build_chat_input(self, tokenizer, messages, generation_config.max_new_tokens)
+        ##################改：增start####################
+        self.input_len=len(input_ids[0])
+        #print("input_ids:",input_ids)
+        ##################改：增end######################
+        
         if stream:
             streamer = TextIterStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
             Thread(target=self.generate, kwargs=dict(

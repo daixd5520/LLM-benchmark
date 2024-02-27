@@ -1,5 +1,5 @@
 # 计算逻辑
-初次前向传播是encode，接下来的第一次前向传播生成第一个token
+初次前向传播是预填充阶段，接下来的第一次前向传播生成第一个token
 所以在forward方法开始处获取开始时间，forward结束时获取结束时间，第一个token的生成时间就是第二次forward结束时的encode_time+decode_time
 同时记录已进行过的forward次数(one_sec_tokens)，在每个forward结束时，判断时间是否超过1s，以记录1s内生成的token数（forward数量减1）
 ```python
